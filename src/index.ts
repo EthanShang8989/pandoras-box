@@ -59,6 +59,12 @@ async function run() {
             'The batch size of JSON-RPC transactions',
             '20'
         )
+        .option(
+            '--interval <interval>',
+            'The interval (in ms) between sending batches',
+            '0'
+        )
+        .option('--continuous', 'Continue sending batches indefinitely', false)
         .parse();
 
     const options = program.opts();
@@ -67,9 +73,11 @@ async function run() {
     const transactionCount = options.transactions;
     const mode = options.mode;
     const mnemonic = options.mnemonic;
-    const subAccountsCount = options.subAccounts;
+    const subAccountsCount = options.SubAccounts;
     const batchSize = options.batch;
     const output = options.output;
+    const interval = options.interval;
+    const continuous = options.continuous;
 
     let runtime: Runtime;
     switch (mode) {
@@ -94,55 +102,59 @@ async function run() {
         default:
             throw RuntimeErrors.errUnknownRuntime;
     }
-
-    // Distribute the native currency funds
-    const distributor = new Distributor(
-        mnemonic,
-        subAccountsCount,
-        transactionCount,
-        runtime,
-        url
-    );
-
-    const accountIndexes: number[] = await distributor.distribute();
-
-    // Distribute the token funds, if any
-    if (mode === RuntimeType.ERC20) {
-        const tokenDistributor = new TokenDistributor(
+    do {
+        // Distribute the native currency funds
+        const distributor = new Distributor(
             mnemonic,
-            accountIndexes,
+            subAccountsCount,
             transactionCount,
-            runtime as TokenRuntime
+            runtime,
+            url
         );
 
-        // Start the distribution
-        await tokenDistributor.distributeTokens();
-    }
+        const accountIndexes: number[] = await distributor.distribute();
 
-    // Run the specific runtime
-    const txHashes = await Engine.Run(
-        runtime,
-        new EngineContext(
-            accountIndexes,
-            transactionCount,
-            batchSize,
+        // Distribute the token funds, if any
+        if (mode === RuntimeType.ERC20) {
+            const tokenDistributor = new TokenDistributor(
+                mnemonic,
+                accountIndexes,
+                transactionCount,
+                runtime as TokenRuntime
+            );
+
+            // Start the distribution
+            await tokenDistributor.distributeTokens();
+        }
+
+        // Run the specific runtime
+        const txHashes = await Engine.Run(
+            runtime,
+            new EngineContext(
+                accountIndexes,
+                transactionCount,
+                batchSize,
+                mnemonic,
+                url
+            )
+        );
+
+        // Collect the data
+        const collectorData = await new StatCollector().generateStats(
+            txHashes,
             mnemonic,
-            url
-        )
-    );
+            url,
+            batchSize
+        );
 
-    // Collect the data
-    const collectorData = await new StatCollector().generateStats(
-        txHashes,
-        mnemonic,
-        url,
-        batchSize
-    );
-
-    // Output the data if needed
-    if (output) {
-        Outputter.outputData(collectorData, output);
-    }
+        // Output the data if needed
+        if (output) {
+            Outputter.outputData(collectorData, output);
+        }
+        if (interval > 0) {
+            await new Promise((resolve) => setTimeout(resolve, interval));
+        }
+    } while (continuous);
 }
 
 run()
